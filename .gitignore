@@ -1,0 +1,53 @@
+# Build output
+build/
+out/
+cmake-build-*/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# IDE
+.vs/
+.vscode/
+*.user
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# --- Retail game files: NOT redistributed (REPO_RULES section 3) ---
+# Command & Conquer 3: Tiberium Wars (c) 2007 Electronic Arts.
+# Bring your own copy; Setup.cmd copies it into game/.
+game/
+original/
+*.exe
+*.EXE
+*.dll
+*.DLL
+*.dat
+*.big
+*.vp6
+*.SkuDef
+*.iso
+*.zip
+
+# Generated from the binary, never committed: the lifted C, the catalog,
+# RTTI/vtable dumps and every other analysis of cnc3game.dat.
+src/recomp/gen/
+work/
+analysis/
+
+# Recordings and logs of runs
+*.mp4
+*.log
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Made by Setup.cmd
+Tiberium Wars (recomp).cmd
+build-farm*/
