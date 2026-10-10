@@ -19,23 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
----
-
-This licence covers what is actually ours in this repository: the setup
-script, the host, the tools and the documentation. It does NOT cover
-Command & Conquer 3 itself.
-
-Command & Conquer 3: Tiberium Wars and Kane's Wrath are (c) 2007-2008
-Electronic Arts. They are not ours to license. Their executables, data,
-movies, music and art are not in this repository and are excluded by
-.gitignore.
-
-Two consequences worth being explicit about:
-
-  * You need your own copy of the game to use any of this. Setup.cmd copies
-    your install into game/; the pipeline reads it from there.
-
-  * Lifted code is a derivative work of the binary it came from. Anything
-    this pipeline emits into work/ or src/recomp/gen/ carries whatever
-    licence the original carries, not this one. The MIT grant above stops at
-    our own work.

@@ -123,6 +123,13 @@ As Step by step, steps 5 and 6. The lifted C lands in `src/recomp/gen/`
 ## License
 
 MIT for what is ours: the setup, the host, the tools and the docs
-([LICENSE](LICENSE)). Command & Conquer 3 is © Electronic Arts, and none of
-it is here. The lifted C is a derivative of your copy of the game and is
-never committed or distributed.
+([LICENSE](LICENSE)). It does not cover Command & Conquer 3 itself.
+
+Command & Conquer 3: Tiberium Wars and Kane's Wrath are © 2007-2008
+Electronic Arts, and are not ours to license. Their executables, data,
+movies, music and art are not in this repository and are excluded by
+`.gitignore`. You need your own copy of the game to use any of this.
+
+The lifted C is a derivative work of the binary it came from. Anything the
+pipeline emits into `work/` or `src/recomp/gen/` carries whatever licence the
+original carries, not this one, and is never committed or distributed.
