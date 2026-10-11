@@ -8,16 +8,16 @@ and [redalert2-recomp](https://github.com/sp00nznet/redalert2-recomp) are:
 the same setup, lift driver, host shape, conformance harness and flags, and
 the same house style as every pcrecomp game.
 
-## Status: **bring-up.** The whole exe lifts with 0 lift errors and boots through the C runtime to its window; it does not play yet. pcrecomp's lift32 has no SSE, and this exe has 92,018 SSE instructions ([bringup.md](docs/bringup.md), 5).
+## Status: **bring-up.** The whole exe lifts with 0 errors and starts up to its Direct3D 9 device with no fault; it has not drawn a frame yet ([bringup.md](docs/bringup.md), 7). Needs pcrecomp with #79, #80 and #83.
 
 | Stage | State |
 |---|---|
 | The build | the Steam release: `RetailExe\1.10\cnc3game.dat`, 2025-02-19, no DRM ([RECON.md](docs/RECON.md)) |
 | RTTI class recovery | 3,570 classes, 5,115 vtables, 12,224 virtual methods |
 | Function catalog (`disasm32`) | 69,622 functions, 98.9% of `.text` |
-| Lift (`run_lift.py --all`) | 69,676 functions, 7.5M lines of C, **0 lift errors**; 14,590 named from the binary's own evidence |
-| Host (`build/tw.exe`, 32-bit, pcrecomp `native32`) | the CRT startup, WinMain, the game's window, `steam_api` initialised; then exits during start-up ([bringup.md](docs/bringup.md)) |
-| SSE | **92,018 instructions not lifted** (`mulss`, `addss`, `movaps`...): lift32 has no SSE yet |
+| Lift (`run_lift.py --all`) | 69,681 functions, 7.5M lines of C, **0 lift errors**; 14,590 named from the binary's own evidence |
+| Host (`build/tw.exe`, 32-bit, pcrecomp `native32`) | CRT, WinMain, window, `steam_api`, the D3D9 device (800x600, windowed); two minutes of start-up, no frame presented yet ([bringup.md](docs/bringup.md)) |
+| SSE | all 212,000 sites lifted (pcrecomp #79) |
 | Conformance (`tools/conformance.py`) | **3/3** boot milestones to the window; lift 0 errors |
 | Kane's Wrath | not started (ROADMAP) |
 
@@ -84,7 +84,7 @@ some-folder\
    ```
    py -3 run_lift.py --all
    ```
-   Expected: `lifted 69676   not-lifted stubs 0   errors 0   no terminator 900`.
+   Expected: `lifted 69681   not-lifted stubs 0   errors 0   no terminator 900`.
    Needs a pcrecomp with `repz ret` lifted (bringup.md, 4).
 6. Build:
    ```

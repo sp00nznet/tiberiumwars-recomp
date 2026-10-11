@@ -78,23 +78,67 @@ The host's `TerminateProcess` shim prints `[exit]` and flushes `--calltrace`
 first, which is how this one was found: the game's own exits otherwise end
 the process before the trace is written.
 
-## 5. Where it is now, and the next wall: SSE
+## 5. SSE, xadd/cmpxchg, and the thread name (pcrecomp)
 
-With 3 and 4 fixed the CRT startup completes, WinMain runs, the window is
-created and `steam_api.dll` initialises. Then a worker thread is started
-(`_beginthreadex`, guest `0x008C55D0`) and the process exits with 136 and no
-report, not yet chased.
-
-Not chased because of a bigger gap: the exe is compiled for SSE, and
-pcrecomp's lift32 has no SSE at all. **92,018 instructions** lift as
-`UNIMPLEMENTED` no-ops, every float multiply, add and compare in the game:
+The exe is compiled for SSE, and pcrecomp's lift32 had no SSE at all:
+**212,000 instructions** lifted as `UNIMPLEMENTED` no-ops, every float
+multiply, add and compare in the game:
 
 ```
-  28334 mulss    17055 addss    12931 subss    10373 movaps
-   6563 comiss    4323 cvtsi2ss  3285 xorps     1530 divss
-   1490 fcompi    1424 cvttss2si
+ 119824 movss   28334 mulss   17055 addss   12931 subss   10651 movaps
+   6563 comiss   4323 cvtsi2ss  3285 xorps   1530 divss   1490 fcompi
 ```
 
-`lift32_cpu.py` (the CPU-struct backend) has SSE; lift32 needs the same,
-on its global registers and lazy flags. That is the next toolkit PR, and it
-comes before chasing run-time failures, since any of them may be this.
+Fixed in pcrecomp (#79, `tools/lift/lift32_sse.py`), with `fcomi`, `lahf` and
+`bsf`/`bsr`; `lock xadd` / `lock cmpxchg` (21 sites, reference counts) in #80.
+After both, what is left unlifted is data decoded as code (`aaa`, `iretd`).
+
+The run still ended, 136 under git bash. That is only the low byte: the real
+exit code (from PowerShell) was **0x406D1388**, MSVC's SetThreadName
+exception. The game names its first worker thread inside
+`__try { RaiseException } __except {}`, but the guest's `__try` is on the
+guest SEH chain, which Windows never walks, so it went unhandled. native32
+now returns from that one code, which is what the empty `__except` does
+(pcrecomp #83).
+
+## 6. Headless that does not touch the screens, and the missing thunks
+
+The first headless runs only hid the window: the game's Direct3D 9 device
+was exclusive fullscreen, and every run switched the real monitors' mode.
+Headless now passes the game its own `-win`, and before any guest code runs
+the host patches `IDirect3D9`'s shared vtable so every `CreateDevice` and
+`Reset` is windowed whatever the game asks for (`headless_d3d9` in
+`host.c`). Runs on a workstation also go through offstage
+(REPO_RULES section 13), and the physical displays' modes are compared
+before and after:
+
+```
+offstage: \\.\DISPLAY10 1920x1080@60 at (5760, 0), dxgi adapter 0 output 2 (pool slot 0)
+[headless] CreateDevice 800x600 -> 0x00000000
+physical displays unchanged: NVIDIA GeForce RTX 5070 2560x1440@60
+```
+
+The next stop was unresolved indirect calls from the vector destructor
+iterator at 0x0040CBFE:
+
+```
+   1104 ICALL: unresolved VA 0x00439455 from 0x0040CBFE
+    294 ICALL: unresolved VA 0x007EE3EE from 0x0040CBFE
+```
+
+Both are this-adjustor thunks (`add ecx, 8; jmp f`) right after the function
+before them, reached only through a pointer pushed as an argument. Five such
+thunks are referenced anywhere; all five are in `RUN_SEEDS`.
+
+## 7. Where it is now
+
+The CRT, WinMain, the window, `steam_api`, the Direct3D 9 device (800x600,
+windowed) and two minutes of start-up with no fault, no unresolved call and
+328 million indirect calls; but **no frame presented** yet:
+
+```
+[watchdog] 120 s: in sub_0075A51E, last native call (native), 328237597 indirect calls, 0 frames presented
+```
+
+Next: whether that is slow loading or a wait that never ends (the main
+thread was last seen in `WaitForSingleObject`), with a per-thread profile.

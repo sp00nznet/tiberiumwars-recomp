@@ -20,6 +20,14 @@ versions follow [SemVer](https://semver.org/).
   lookups of its own exports (`GetModuleHandleExA`, `GetProcAddress`) answer
   with the guest image, and its `TerminateProcess` prints `[exit]` and
   flushes `--calltrace` first (docs/bringup.md, 3 and 4).
+- Headless that cannot touch the real displays: the game's `-win`, and every
+  Direct3D 9 `CreateDevice`/`Reset` forced windowed through `IDirect3D9`'s
+  shared vtable, patched before the guest runs. The first headless runs
+  switched the workstation's monitor modes. Frames presented are counted and
+  reported by the watchdog.
+- `RUN_SEEDS`: five this-adjustor thunks the catalog misses.
+- An exit report for an exit no shim sees (`ExitProcess` from native code):
+  the exiting thread's native stack, from a TLS callback.
 - `tools/conformance.py`: boot milestones and lift health against
   `conformance.json`.
 - docs: `RECON.md` (the launcher, the exe, against Tiberian Sun),

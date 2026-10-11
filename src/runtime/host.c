@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <d3d9.h>
+
 #include "native32.h"
 #include "recomp_trace.h"
 
@@ -99,6 +101,78 @@ static void shim_GetModuleHandleExA(void) {
         g_eax = GetModuleHandleExA(flags, (LPCSTR)(uintptr_t)name, (HMODULE*)out);
     }
     g_esp += 4 + 3 * 4;
+}
+
+/* ---- headless Direct3D 9: never change the real display mode --------------
+ * A headless run must not touch the machine's screens (REPO_RULES section
+ * 13). The game's own -win keeps it windowed, but a fullscreen device was
+ * still what it asked for once, and an exclusive D3D9 device switches the
+ * real monitors' mode on every start: the first headless runs did exactly
+ * that to the workstation. So every CreateDevice and Reset goes through
+ * windowed, whatever the game passes. Raw vtable slots: IDirect3D9::CreateDevice and
+ * IDirect3DDevice9::Reset are both slot 16. */
+typedef void* (WINAPI* d3d_create9_t)(UINT);
+typedef HRESULT (WINAPI* d3d_createdev_t)(void*, UINT, DWORD, HWND, DWORD, D3DPRESENT_PARAMETERS*, void**);
+typedef HRESULT (WINAPI* d3d_reset_t)(void*, D3DPRESENT_PARAMETERS*);
+static d3d_createdev_t g_real_createdev;
+static d3d_reset_t g_real_reset;
+typedef HRESULT (WINAPI* d3d_present_t)(void*, const RECT*, const RECT*, HWND, const void*);
+static d3d_present_t g_real_present;
+static volatile LONG g_presents;      /* frames the game has presented: progress, for the watchdog */
+
+static HRESULT WINAPI hl_Present(void* dev, const RECT* src, const RECT* dst, HWND wnd, const void* dirty) {
+    if (InterlockedIncrement(&g_presents) == 1) fprintf(stderr, "[headless] first Present\n");
+    return g_real_present(dev, src, dst, wnd, dirty);
+}
+
+static void force_windowed(D3DPRESENT_PARAMETERS* pp, const char* what) {
+    if (pp && !pp->Windowed) {
+        fprintf(stderr, "[headless] %s asked for %ux%u fullscreen: windowed instead\n", what,
+                pp->BackBufferWidth, pp->BackBufferHeight);
+        pp->Windowed = TRUE;
+        pp->FullScreen_RefreshRateInHz = 0;
+    }
+}
+
+static void patch_slot(void* obj, int slot, void* fn, void** real) {
+    void** vt = *(void***)obj;
+    DWORD old;
+    if (vt[slot] == fn) return;
+    if (!*real) *real = vt[slot];
+    VirtualProtect(&vt[slot], sizeof(void*), PAGE_READWRITE, &old);
+    vt[slot] = fn;
+    VirtualProtect(&vt[slot], sizeof(void*), old, &old);
+}
+
+static HRESULT WINAPI hl_Reset(void* dev, D3DPRESENT_PARAMETERS* pp) {
+    force_windowed(pp, "Reset");
+    return g_real_reset(dev, pp);
+}
+
+static HRESULT WINAPI hl_CreateDevice(void* d3d, UINT adapter, DWORD type, HWND focus, DWORD flags,
+                                      D3DPRESENT_PARAMETERS* pp, void** out) {
+    force_windowed(pp, "CreateDevice");
+    HRESULT hr = g_real_createdev(d3d, adapter, type, focus, flags, pp, out);
+    fprintf(stderr, "[headless] CreateDevice %ux%u -> 0x%08lX\n", pp ? pp->BackBufferWidth : 0,
+            pp ? pp->BackBufferHeight : 0, (unsigned long)hr);
+    if (SUCCEEDED(hr) && out && *out) {
+        patch_slot(*out, 16, (void*)hl_Reset, (void**)&g_real_reset);
+        patch_slot(*out, 17, (void*)hl_Present, (void**)&g_real_present);
+    }
+    return hr;
+}
+
+/* Patch IDirect3D9's vtable, which d3d9.dll shares between every object it
+ * hands out, through one object made here: whichever way the game reaches
+ * Direct3DCreate9, its CreateDevice is this one. Before the guest runs. */
+static int headless_d3d9(void) {
+    HMODULE m = LoadLibraryA("d3d9.dll");
+    d3d_create9_t create = m ? (d3d_create9_t)(void*)GetProcAddress(m, "Direct3DCreate9") : NULL;
+    void* d3d = create ? create(D3D_SDK_VERSION) : NULL;
+    if (!d3d) { fprintf(stderr, "headless: cannot create Direct3D 9 to guard the display mode\n"); return 1; }
+    patch_slot(d3d, 16, (void*)hl_CreateDevice, (void**)&g_real_createdev);
+    ((ULONG (WINAPI*)(void*))(*(void***)d3d)[2])(d3d);            /* Release; the vtable stays */
+    return 0;
 }
 
 static void shim_GetProcAddress(void) {
@@ -290,11 +364,42 @@ static LONG CALLBACK crash(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* A process exit nobody reports: ExitProcess called by native code (the CRT's
+ * exit, a DLL), which no shim sees. Windows runs this exe's TLS callbacks with
+ * DLL_PROCESS_DETACH on the thread that called it, after the other threads are
+ * gone, so its native stack still says who. */
+static int g_entered;                 /* the guest's entry point has been called */
+static void NTAPI exit_report(PVOID h, DWORD reason, PVOID r) {
+    (void)h; (void)r;
+    if (reason != DLL_PROCESS_DETACH || !g_entered) return;
+    void* frames[24];
+    USHORT n = CaptureStackBackTrace(0, 24, frames, NULL);
+    g_crash_len = 0;
+    crash_emit("\n[exit] process exiting on thread %lu, last lifted sub_%08X, last native call %s\n",
+               GetCurrentThreadId(), g_cur_func, g_cur_import);
+    for (USHORT i = 0; i < n; i++) {
+        HMODULE m = NULL;
+        char path[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)frames[i], &m))
+            GetModuleFileNameA(m, path, sizeof path);
+        crash_emit("  %p  %s+0x%lX\n", frames[i], strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path,
+                   m ? (unsigned long)((uintptr_t)frames[i] - (uintptr_t)m) : 0ul);
+    }
+    DWORD w;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), g_crash_buf, (DWORD)g_crash_len, &w, NULL);
+}
+#pragma comment(linker, "/INCLUDE:__tls_used")
+#pragma comment(linker, "/INCLUDE:_tw_exit_report")
+#pragma const_seg(".CRT$XLB")
+const PIMAGE_TLS_CALLBACK tw_exit_report = exit_report;
+#pragma const_seg()
+
 static DWORD WINAPI watchdog(LPVOID unused) {
     (void)unused;
     Sleep(g_watchdog_s * 1000);
-    fprintf(stderr, "\n[watchdog] %lu s: in sub_%08X, last native call %s, %u indirect calls\n",
-            g_watchdog_s, g_cur_func, g_cur_import, g_icall_count);
+    fprintf(stderr, "\n[watchdog] %lu s: in sub_%08X, last native call %s, %u indirect calls, %ld frames presented\n",
+            g_watchdog_s, g_cur_func, g_cur_import, g_icall_count, g_presents);
     native32_dump_icalls(8);
     recomp_trace_flush();
     fflush(stderr);
@@ -332,8 +437,9 @@ int main(int argc, char** argv) {
     GetFullPathNameA(game, MAX_PATH, game_full, NULL);
     _snprintf(exe_full, sizeof exe_full - 1, "%s\\" TW_EXE, game_full);
     strcpy_s(g_guest_exe, sizeof g_guest_exe, exe_full);
-    _snprintf(g_guest_cmdline, sizeof g_guest_cmdline - 1, "\"%s\" -config \"%s\\" TW_SKUDEF "\"%s%s",
-              g_guest_exe, game_full, *extra ? " " : "", extra);
+    /* Headless: the game's own -win too, so it never asks for fullscreen. */
+    _snprintf(g_guest_cmdline, sizeof g_guest_cmdline - 1, "\"%s\" -config \"%s\\" TW_SKUDEF "\"%s%s%s",
+              g_guest_exe, game_full, g_headless ? " -win" : "", *extra ? " " : "", extra);
     MultiByteToWideChar(CP_ACP, 0, g_guest_exe, -1, g_guest_exe_w, MAX_PATH);
     MultiByteToWideChar(CP_ACP, 0, g_guest_cmdline, -1, g_guest_cmdline_w,
                         sizeof g_guest_cmdline_w / sizeof g_guest_cmdline_w[0]);
@@ -360,6 +466,9 @@ int main(int argc, char** argv) {
         }
     }
     if (activate_guest_manifest(exe_full)) return 1;
+    /* Before anything of the guest's runs: a headless run must not be able to
+     * change the real display mode (headless_d3d9). */
+    if (g_headless && headless_d3d9()) return 1;
     uint32_t span = native32_map(exe_full, TW_IMAGE_BASE);
     if (!span) { fprintf(stderr, "cannot map %s at 0x%08X\n", exe_full, TW_IMAGE_BASE); return 1; }
     printf("  mapped %s: 0x%08X-0x%08X\n", TW_EXE, TW_IMAGE_BASE, TW_IMAGE_BASE + span);
@@ -379,6 +488,7 @@ int main(int argc, char** argv) {
     if (g_watchdog_s) CloseHandle(CreateThread(NULL, 0, watchdog, NULL, 0, NULL));
     printf("  entering 0x%08X\n\n", tw_entry_va);
     fflush(stdout);
+    g_entered = 1;
     native32_call_guest(tw_entry_va, 0, NULL);
     printf("\nentry returned eax=%08X\n", g_eax);
     return (int)g_eax;

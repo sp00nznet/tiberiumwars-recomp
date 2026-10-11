@@ -48,8 +48,11 @@ OUT = os.path.join(_HERE, 'src', 'recomp', 'gen')
 STATS = os.path.join(_HERE, 'work', 'lift_stats.json')
 
 # Entries the catalog does not find, so a clean checkout lifts them too
-# (docs/bringup.md). None yet.
-RUN_SEEDS = []
+# (docs/bringup.md, 6). MSVC this-adjustor thunks (`add ecx, N; jmp f`, or
+# sub) sitting right after the function before them, reached only through a
+# pointer pushed as an argument (the vector destructor iterator, 0x0040CBFE)
+# or stored in data. An unresolved ICALL answers eax = 0 and carries on.
+RUN_SEEDS = [0x00439455, 0x004BC497, 0x00776172, 0x0077AB43, 0x007EE3EE]
 
 # Functions whose body is the host's instead of the lift: the host defines
 # tw_hook_XXXXXXXX(void) and it runs like an import shim. src/runtime/host.c.
